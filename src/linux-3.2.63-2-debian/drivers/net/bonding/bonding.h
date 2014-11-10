@@ -55,7 +55,8 @@
 
 #define TX_QUEUE_OVERRIDE(mode)				\
 			(((mode) == BOND_MODE_ACTIVEBACKUP) ||	\
-			 ((mode) == BOND_MODE_ROUNDROBIN))
+			 ((mode) == BOND_MODE_ROUNDROBIN) ||	\
+			 ((mode) == BOND_MODE_ARR))
 /*
  * Less bad way to call ioctl from within the kernel; this needs to be
  * done some other way to get the call out of interrupt context.
@@ -194,12 +195,23 @@ struct slave {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	struct netpoll *np;
 #endif
+	u32    arr_weight;
 };
 
 /*
  * Link pseudo-state only used internally by monitors
  */
 #define BOND_LINK_NOCHANGE -1
+
+struct arr_struct {
+	int queue[1000];
+	int queue_pos;
+	int current_slave_id;
+	int current_mode;
+	int last_tx_counter;
+	int queue_length;
+	int last_speeds[10];
+};
 
 /*
  * Here are the locking policies for the two bonding locks:
@@ -244,10 +256,12 @@ struct bonding {
 	struct   delayed_work alb_work;
 	struct   delayed_work ad_work;
 	struct   delayed_work mcast_work;
+	struct   delayed_work arr_work;
 #ifdef CONFIG_DEBUG_FS
 	/* debugging suport via debugfs */
 	struct	 dentry *debug_dir;
 #endif /* CONFIG_DEBUG_FS */
+	struct arr_struct arr;
 };
 
 static inline bool bond_vlan_used(struct bonding *bond)

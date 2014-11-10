@@ -134,7 +134,7 @@ module_param(mode, charp, 0);
 MODULE_PARM_DESC(mode, "Mode of operation; 0 for balance-rr, "
 		       "1 for active-backup, 2 for balance-xor, "
 		       "3 for broadcast, 4 for 802.3ad, 5 for balance-tlb, "
-		       "6 for balance-alb");
+		       "6 for balance-alb, 7 for balance-arr");
 module_param(primary, charp, 0);
 MODULE_PARM_DESC(primary, "Primary network device to use");
 module_param(primary_reselect, charp, 0);
@@ -207,6 +207,7 @@ const struct bond_parm_tbl bond_mode_tbl[] = {
 {	"802.3ad",		BOND_MODE_8023AD},
 {	"balance-tlb",		BOND_MODE_TLB},
 {	"balance-alb",		BOND_MODE_ALB},
+{	"balance-arr",		BOND_MODE_ARR},
 {	NULL,			-1},
 };
 
@@ -263,6 +264,7 @@ const char *bond_mode_name(int mode)
 		[BOND_MODE_8023AD] = "IEEE 802.3ad Dynamic link aggregation",
 		[BOND_MODE_TLB] = "transmit load balancing",
 		[BOND_MODE_ALB] = "adaptive load balancing",
+		[BOND_MODE_ARR] = "adaptive round-robin",
 	};
 
 	if (mode < 0 || mode > BOND_MODE_ALB)
@@ -1120,7 +1122,8 @@ void bond_change_active_slave(struct bonding *bond, struct slave *new_active)
 	 * bonding modes and the retransmission is enabled */
 	if (netif_running(bond->dev) && (bond->params.resend_igmp > 0) &&
 	    ((USES_PRIMARY(bond->params.mode) && new_active) ||
-	     bond->params.mode == BOND_MODE_ROUNDROBIN)) {
+	     bond->params.mode == BOND_MODE_ROUNDROBIN ||
+	     bond->params.mode == BOND_MODE_ARR)) {
 		bond->igmp_retrans = bond->params.resend_igmp;
 		queue_delayed_work(bond->wq, &bond->mcast_work, 0);
 	}
@@ -1801,6 +1804,11 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 		bond_set_slave_inactive_flags(new_slave);
 		bond_select_active_slave(bond);
 		break;
+	case BOND_MODE_ARR:
+		new_slave->arr_weight = 100;
+		// ?
+		// arr_update_queue(bond->dev);
+		break;
 	default:
 		pr_debug("This slave is always active in trunk mode\n");
 
@@ -2316,7 +2324,168 @@ static int bond_slave_info_query(struct net_device *bond_dev, struct ifslave *in
 	return res;
 }
 
+static void arr_reset(struct bonding *bond)
+{
+	int i;
+
+	bond->arr.queue_pos = 0;
+	bond->arr.current_slave_id = 0;
+	bond->arr.current_mode = 0;
+	bond->arr.last_tx_counter = 0;
+	bond->arr.queue_length = 10;
+
+	for (i=0; i<10; i++)
+	{
+		bond->arr.queue[i] = 0;
+	}
+
+	for (i=0; i<10; i++)
+	{
+		bond->arr.last_speeds[i] = 0;
+	}
+
+	return;
+}
+
+u32 arr_rand_next = 123;
+
+static inline u32 arr_rand(u32 max)
+{
+	arr_rand_next = arr_rand_next * 1103515245 + 12345;
+	return (u32)((arr_rand_next / 65536) % max);
+}
+
+static void arr_update_queue(struct net_device *bond_dev)
+{
+	struct bonding *bond = netdev_priv(bond_dev);
+	struct slave *slave;
+	int i, j, k, tmp;
+
+	write_lock_bh(&bond->lock);
+
+	// create the queue
+	// TODO: the defined size of queue is now 1000, should fix that
+	k = 0;
+	bond_for_each_slave(bond, slave, i) {
+		for (j=0; j<slave->arr_weight; j++)
+		{
+			bond->arr.queue[k++] = i;
+		}
+	}
+
+	// randomize the queue
+	for (i = 0; i < k-1; i++)
+	{
+		j = i + arr_rand(k - i) + 1;
+		tmp = bond->arr.queue[j];
+		bond->arr.queue[j] = bond->arr.queue[i];
+		bond->arr.queue[i] = tmp;
+	}
+
+	bond->arr.queue_length = k;
+
+	write_unlock_bh(&bond->lock);
+}
+
+static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsigned int current_speed)
+{
+	struct bonding *bond = netdev_priv(bond_dev);
+	struct slave *slave;
+	int i, sum, max, slave_no;
+
+	pr_info("arr_update(..., %d, %d)\n", avg_speed, current_speed);
+
+	if (avg_speed == 0 || current_speed == 0)
+	{
+		return;
+	}
+
+	slave_no = bond->arr.current_slave_id;
+
+	bond_for_each_slave(bond, slave, i) {
+		slave_no--;
+		if (slave_no < 0)
+			break;
+	}
+
+	if (bond->arr.current_mode == 0)
+	{
+		slave->arr_weight += 10;
+		bond->arr.current_mode = 1;
+	}
+	else
+	{
+		if (current_speed < avg_speed)
+		{
+			slave->arr_weight -= 10;
+			bond->arr.current_slave_id = (bond->arr.current_slave_id + 1) % bond->slave_cnt;
+			bond->arr.current_mode = 0;
+		}
+		else
+		{
+			slave->arr_weight += 10;
+		}
+	}
+
+	sum = 0;
+	max = 0;
+	bond_for_each_slave(bond, slave, i) {
+		sum += slave->arr_weight;
+		max = slave->arr_weight > max ? slave->arr_weight : max;
+		pr_info("  %d arr weight: %d\n", i, slave->arr_weight);
+	}
+
+	if (unlikely(max > 200))
+	{
+		bond_for_each_slave(bond, slave, i) {
+			// should be always > 0
+			slave->arr_weight = slave->arr_weight / 2 + 1;
+		}
+	}
+
+	arr_update_queue(bond_dev);
+}
+
 /*-------------------------------- Monitoring -------------------------------*/
+
+void bond_arr_monitor(struct work_struct *work)
+{
+	struct bonding *bond = container_of(work, struct bonding,
+					    arr_work.work);
+	unsigned long delay;
+	int i, count, sum, avg_speed;
+
+	delay = msecs_to_jiffies(2000);
+
+	count = bond->rr_tx_counter - bond->arr.last_tx_counter;
+
+	pr_info("Packets transmitted: %d\n", count);
+
+	if (count > 20)
+	{
+		sum = 0;
+		for (i=0; i<10; i++)
+		{
+			sum += bond->arr.last_speeds[i];
+		}
+		avg_speed = sum / 10;
+
+		arr_update(bond->dev, avg_speed, count);
+	}
+
+	for (i=1; i<10; i++)
+	{
+		bond->arr.last_speeds[i] = bond->arr.last_speeds[i - 1];
+	}
+	bond->arr.last_speeds[0] = count;
+
+	bond->arr.last_tx_counter = bond->rr_tx_counter;
+
+	goto re_arm;
+
+re_arm:
+	queue_delayed_work(bond->wq, &bond->arr_work, delay);
+}
 
 
 static int bond_miimon_inspect(struct bonding *bond)
@@ -3440,6 +3609,7 @@ static void bond_work_init_all(struct bonding *bond)
 	else
 		INIT_DELAYED_WORK(&bond->arp_work, bond_loadbalance_arp_mon);
 	INIT_DELAYED_WORK(&bond->ad_work, bond_3ad_state_machine_handler);
+	INIT_DELAYED_WORK(&bond->arr_work, bond_arr_monitor);
 }
 
 static void bond_work_cancel_all(struct bonding *bond)
@@ -3449,6 +3619,7 @@ static void bond_work_cancel_all(struct bonding *bond)
 	cancel_delayed_work_sync(&bond->alb_work);
 	cancel_delayed_work_sync(&bond->ad_work);
 	cancel_delayed_work_sync(&bond->mcast_work);
+	cancel_delayed_work_sync(&bond->arr_work);
 }
 
 static int bond_open(struct net_device *bond_dev)
@@ -3499,6 +3670,9 @@ static int bond_open(struct net_device *bond_dev)
 		bond->recv_probe = bond_3ad_lacpdu_recv;
 		bond_3ad_initiate_agg_selection(bond, 1);
 	}
+
+	arr_reset(bond);
+	queue_delayed_work(bond->wq, &bond->arr_work, 0);
 
 	return 0;
 }
@@ -3975,6 +4149,68 @@ out:
 	return NETDEV_TX_OK;
 }
 
+static int bond_xmit_arr(struct sk_buff *skb, struct net_device *bond_dev)
+{
+	struct bonding *bond = netdev_priv(bond_dev);
+	struct slave *slave, *start_at;
+	int i, slave_no, res = 1;
+	struct iphdr *iph = ip_hdr(skb);
+
+	/*
+	 * Start with the curr_active_slave that joined the bond as the
+	 * default for sending IGMP traffic.  For failover purposes one
+	 * needs to maintain some consistency for the interface that will
+	 * send the join/membership reports.  The curr_active_slave found
+	 * will send all of this type of traffic.
+	 */
+	if ((iph->protocol == IPPROTO_IGMP) &&
+	    (skb->protocol == htons(ETH_P_IP))) {
+
+		read_lock(&bond->curr_slave_lock);
+		slave = bond->curr_active_slave;
+		read_unlock(&bond->curr_slave_lock);
+
+		if (!slave)
+			goto out;
+	} else {
+		/*
+		 * Concurrent TX may collide on rr_tx_counter; we accept
+		 * that as being rare enough not to justify using an
+		 * atomic op here.
+		 */
+
+		read_lock_bh(&bond->lock);
+
+		slave_no = bond->arr.queue[bond->rr_tx_counter++ % bond->arr.queue_length];
+
+		read_unlock_bh(&bond->lock);
+
+		bond_for_each_slave(bond, slave, i) {
+			slave_no--;
+			if (slave_no < 0)
+				break;
+		}
+	}
+
+	start_at = slave;
+	bond_for_each_slave_from(bond, slave, i, start_at) {
+		if (IS_UP(slave->dev) &&
+		    (slave->link == BOND_LINK_UP) &&
+		    bond_is_active_slave(slave)) {
+			res = bond_dev_queue_xmit(bond, skb, slave->dev);
+			break;
+		}
+	}
+
+out:
+	if (res) {
+		/* no suitable interface, frame not sent */
+		dev_kfree_skb(skb);
+	}
+
+	return NETDEV_TX_OK;
+}
+
 
 /*
  * in active-backup mode, we know that bond->curr_active_slave is always valid if
@@ -4187,6 +4423,8 @@ static netdev_tx_t __bond_start_xmit(struct sk_buff *skb, struct net_device *dev
 	case BOND_MODE_ALB:
 	case BOND_MODE_TLB:
 		return bond_alb_xmit(skb, dev);
+	case BOND_MODE_ARR:
+		return bond_xmit_arr(skb, dev);
 	default:
 		/* Should never happen, mode already checked */
 		pr_err("%s: Error: Unknown bonding mode %d\n",
@@ -4244,6 +4482,8 @@ void bond_set_mode_ops(struct bonding *bond, int mode)
 	case BOND_MODE_ALB:
 		/* FALLTHRU */
 	case BOND_MODE_TLB:
+		break;
+	case BOND_MODE_ARR:
 		break;
 	default:
 		/* Should never happen, mode already checked */
