@@ -1526,9 +1526,12 @@ static void arr_update_queue(struct net_device *bond_dev)
 	
 	k = 0;
 	bond_for_each_slave(bond, slave, i) {
-		for (j=0; j<slave->arr_weight; j++)
+		if (IS_UP(slave->dev))
 		{
-			bond->arr.queue[k++] = i;
+			for (j=0; j<slave->arr_weight; j++)
+			{
+				bond->arr.queue[k++] = i;
+			}
 		}
 	}
 
