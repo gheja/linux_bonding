@@ -210,7 +210,7 @@ struct arr_struct {
 	int current_mode;
 	int last_tx_counter;
 	int queue_length;
-	int last_speeds[10];
+	int last_speeds[30];
 };
 
 /*

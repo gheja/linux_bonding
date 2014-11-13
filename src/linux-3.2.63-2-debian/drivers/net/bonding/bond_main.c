@@ -2339,7 +2339,7 @@ static void arr_reset(struct bonding *bond)
 		bond->arr.queue[i] = 0;
 	}
 
-	for (i=0; i<10; i++)
+	for (i=0; i<30; i++)
 	{
 		bond->arr.last_speeds[i] = 0;
 	}
@@ -2453,7 +2453,7 @@ void bond_arr_monitor(struct work_struct *work)
 	struct bonding *bond = container_of(work, struct bonding,
 					    arr_work.work);
 	unsigned long delay;
-	int i, count, sum, avg_speed;
+	int i, count, sum, avg_speed, current_speed;
 
 	delay = msecs_to_jiffies(2000);
 
@@ -2461,16 +2461,23 @@ void bond_arr_monitor(struct work_struct *work)
 
 	pr_info("Packets transmitted: %d\n", count);
 
-	if (count > 20)
+	if (count > 5)
 	{
+		sum = 0;
+		for (i=0; i<30; i++)
+		{
+			sum += bond->arr.last_speeds[i];
+		}
+		avg_speed = sum / 30;
+
 		sum = 0;
 		for (i=0; i<10; i++)
 		{
 			sum += bond->arr.last_speeds[i];
 		}
-		avg_speed = sum / 10;
+		current_speed = sum / 10;
 
-		arr_update(bond->dev, avg_speed, count);
+		arr_update(bond->dev, avg_speed, current_speed);
 	}
 
 	for (i=1; i<10; i++)
