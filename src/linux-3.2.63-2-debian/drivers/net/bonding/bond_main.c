@@ -1929,8 +1929,7 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 		break;
 	case BOND_MODE_ARR:
 		new_slave->arr_weight = 100;
-		// ?
-		// arr_update_queue(bond->dev);
+		arr_update_queue(bond->dev);
 		break;
 	default:
 		pr_debug("This slave is always active in trunk mode\n");
@@ -2199,6 +2198,13 @@ int bond_release(struct net_device *bond_dev, struct net_device *slave_dev)
 
 	/* close slave before restoring its mac address */
 	dev_close(slave_dev);
+
+	write_lock_bh(&bond->lock);
+
+	arr_update_queue(bond_dev);
+
+	write_unlock_bh(&bond->lock);
+
 
 	if (bond->params.fail_over_mac != BOND_FOM_ACTIVE) {
 		/* restore original ("permanent") mac address */
