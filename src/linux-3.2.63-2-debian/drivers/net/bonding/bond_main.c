@@ -2457,7 +2457,7 @@ void bond_arr_monitor(struct work_struct *work)
 
 	delay = msecs_to_jiffies(2000);
 
-	if (!bond->params.mode != BOND_MODE_ARR)
+	if (bond->params.mode != BOND_MODE_ARR)
 	{
 		goto re_arm;
 	}
