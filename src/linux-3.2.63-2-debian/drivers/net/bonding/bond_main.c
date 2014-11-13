@@ -3462,6 +3462,15 @@ static int bond_slave_netdev_event(unsigned long event,
 		break;
 	}
 
+	if (bond->params.mode == BOND_MODE_ARR)
+	{
+		write_lock_bh(&bond->lock);
+
+		arr_update_queue(bond_dev);
+
+		write_unlock_bh(&bond->lock);
+	}
+
 	return NOTIFY_DONE;
 }
 
