@@ -2361,8 +2361,6 @@ static void arr_update_queue(struct net_device *bond_dev)
 	struct slave *slave;
 	int i, j, k, tmp;
 
-	write_lock_bh(&bond->lock);
-
 	// create the queue
 	// TODO: the defined size of queue is now 1000, should fix that
 	k = 0;
@@ -2383,8 +2381,6 @@ static void arr_update_queue(struct net_device *bond_dev)
 	}
 
 	bond->arr.queue_length = k;
-
-	write_unlock_bh(&bond->lock);
 }
 
 static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsigned int current_speed)
@@ -2443,7 +2439,11 @@ static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsi
 		}
 	}
 
+	write_lock_bh(&bond->lock);
+
 	arr_update_queue(bond_dev);
+
+	write_unlock_bh(&bond->lock);
 }
 
 /*-------------------------------- Monitoring -------------------------------*/
