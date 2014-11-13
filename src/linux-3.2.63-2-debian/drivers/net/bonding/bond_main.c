@@ -2480,7 +2480,7 @@ void bond_arr_monitor(struct work_struct *work)
 		arr_update(bond->dev, avg_speed, current_speed);
 	}
 
-	for (i=1; i<10; i++)
+	for (i=29; i>0; i--)
 	{
 		bond->arr.last_speeds[i] = bond->arr.last_speeds[i - 1];
 	}
