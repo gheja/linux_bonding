@@ -1484,6 +1484,129 @@ static rx_handler_result_t bond_handle_frame(struct sk_buff **pskb)
 	return RX_HANDLER_ANOTHER;
 }
 
+static void arr_reset(struct bonding *bond)
+{
+	int i;
+
+	bond->arr.queue_pos = 0;
+	bond->arr.current_slave_id = 0;
+	bond->arr.current_mode = 0;
+	bond->arr.last_tx_counter = 0;
+	bond->arr.queue_length = 10;
+
+	for (i=0; i<10; i++)
+	{
+		bond->arr.queue[i] = 0;
+	}
+
+	for (i=0; i<30; i++)
+	{
+		bond->arr.last_speeds[i] = 0;
+	}
+
+	return;
+}
+
+u32 arr_rand_next = 123;
+
+static inline u32 arr_rand(u32 max)
+{
+	arr_rand_next = arr_rand_next * 1103515245 + 12345;
+	return (u32)((arr_rand_next / 65536) % max);
+}
+
+static void arr_update_queue(struct net_device *bond_dev)
+{
+	struct bonding *bond = netdev_priv(bond_dev);
+	struct slave *slave;
+	int i, j, k, tmp;
+
+	// create the queue
+	// TODO: the defined size of queue is now 1000, should fix that
+	
+	k = 0;
+	bond_for_each_slave(bond, slave, i) {
+		for (j=0; j<slave->arr_weight; j++)
+		{
+			bond->arr.queue[k++] = i;
+		}
+	}
+
+	// randomize the queue
+	for (i = 0; i < k-1; i++)
+	{
+		j = i + arr_rand(k - i) + 1;
+		tmp = bond->arr.queue[j];
+		bond->arr.queue[j] = bond->arr.queue[i];
+		bond->arr.queue[i] = tmp;
+	}
+
+	bond->arr.queue_length = k;
+}
+
+static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsigned int current_speed)
+{
+	struct bonding *bond = netdev_priv(bond_dev);
+	struct slave *slave;
+	int i, sum, max, slave_no;
+
+	pr_info("arr_update(..., %d, %d)\n", avg_speed, current_speed);
+
+	if (avg_speed == 0 || current_speed == 0)
+	{
+		return;
+	}
+
+	slave_no = bond->arr.current_slave_id;
+
+	bond_for_each_slave(bond, slave, i) {
+		slave_no--;
+		if (slave_no < 0)
+			break;
+	}
+
+	if (bond->arr.current_mode == 0)
+	{
+		slave->arr_weight += 10;
+		bond->arr.current_mode = 1;
+	}
+	else
+	{
+		if (current_speed < avg_speed)
+		{
+			slave->arr_weight -= 10;
+			bond->arr.current_slave_id = (bond->arr.current_slave_id + 1) % bond->slave_cnt;
+			bond->arr.current_mode = 0;
+		}
+		else
+		{
+			slave->arr_weight += 10;
+		}
+	}
+
+	sum = 0;
+	max = 0;
+	bond_for_each_slave(bond, slave, i) {
+		sum += slave->arr_weight;
+		max = slave->arr_weight > max ? slave->arr_weight : max;
+		pr_info("  %d arr weight: %d\n", i, slave->arr_weight);
+	}
+
+	if (unlikely(max > 200))
+	{
+		bond_for_each_slave(bond, slave, i) {
+			// should be always > 0
+			slave->arr_weight = slave->arr_weight / 2 + 1;
+		}
+	}
+
+	write_lock_bh(&bond->lock);
+
+	arr_update_queue(bond_dev);
+
+	write_unlock_bh(&bond->lock);
+}
+
 /* enslave device <slave> to bond device <master> */
 int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 {
@@ -2322,128 +2445,6 @@ static int bond_slave_info_query(struct net_device *bond_dev, struct ifslave *in
 	read_unlock(&bond->lock);
 
 	return res;
-}
-
-static void arr_reset(struct bonding *bond)
-{
-	int i;
-
-	bond->arr.queue_pos = 0;
-	bond->arr.current_slave_id = 0;
-	bond->arr.current_mode = 0;
-	bond->arr.last_tx_counter = 0;
-	bond->arr.queue_length = 10;
-
-	for (i=0; i<10; i++)
-	{
-		bond->arr.queue[i] = 0;
-	}
-
-	for (i=0; i<30; i++)
-	{
-		bond->arr.last_speeds[i] = 0;
-	}
-
-	return;
-}
-
-u32 arr_rand_next = 123;
-
-static inline u32 arr_rand(u32 max)
-{
-	arr_rand_next = arr_rand_next * 1103515245 + 12345;
-	return (u32)((arr_rand_next / 65536) % max);
-}
-
-static void arr_update_queue(struct net_device *bond_dev)
-{
-	struct bonding *bond = netdev_priv(bond_dev);
-	struct slave *slave;
-	int i, j, k, tmp;
-
-	// create the queue
-	// TODO: the defined size of queue is now 1000, should fix that
-	k = 0;
-	bond_for_each_slave(bond, slave, i) {
-		for (j=0; j<slave->arr_weight; j++)
-		{
-			bond->arr.queue[k++] = i;
-		}
-	}
-
-	// randomize the queue
-	for (i = 0; i < k-1; i++)
-	{
-		j = i + arr_rand(k - i) + 1;
-		tmp = bond->arr.queue[j];
-		bond->arr.queue[j] = bond->arr.queue[i];
-		bond->arr.queue[i] = tmp;
-	}
-
-	bond->arr.queue_length = k;
-}
-
-static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsigned int current_speed)
-{
-	struct bonding *bond = netdev_priv(bond_dev);
-	struct slave *slave;
-	int i, sum, max, slave_no;
-
-	pr_info("arr_update(..., %d, %d)\n", avg_speed, current_speed);
-
-	if (avg_speed == 0 || current_speed == 0)
-	{
-		return;
-	}
-
-	slave_no = bond->arr.current_slave_id;
-
-	bond_for_each_slave(bond, slave, i) {
-		slave_no--;
-		if (slave_no < 0)
-			break;
-	}
-
-	if (bond->arr.current_mode == 0)
-	{
-		slave->arr_weight += 10;
-		bond->arr.current_mode = 1;
-	}
-	else
-	{
-		if (current_speed < avg_speed)
-		{
-			slave->arr_weight -= 10;
-			bond->arr.current_slave_id = (bond->arr.current_slave_id + 1) % bond->slave_cnt;
-			bond->arr.current_mode = 0;
-		}
-		else
-		{
-			slave->arr_weight += 10;
-		}
-	}
-
-	sum = 0;
-	max = 0;
-	bond_for_each_slave(bond, slave, i) {
-		sum += slave->arr_weight;
-		max = slave->arr_weight > max ? slave->arr_weight : max;
-		pr_info("  %d arr weight: %d\n", i, slave->arr_weight);
-	}
-
-	if (unlikely(max > 200))
-	{
-		bond_for_each_slave(bond, slave, i) {
-			// should be always > 0
-			slave->arr_weight = slave->arr_weight / 2 + 1;
-		}
-	}
-
-	write_lock_bh(&bond->lock);
-
-	arr_update_queue(bond_dev);
-
-	write_unlock_bh(&bond->lock);
 }
 
 /*-------------------------------- Monitoring -------------------------------*/
