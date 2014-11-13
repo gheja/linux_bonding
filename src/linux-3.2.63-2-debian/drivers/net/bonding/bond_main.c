@@ -4212,6 +4212,12 @@ static int bond_xmit_arr(struct sk_buff *skb, struct net_device *bond_dev)
 
 		read_lock_bh(&bond->lock);
 
+		if (unlikely(bond->arr.queue_length == 0))
+		{
+			read_unlock_bh(&bond->lock);
+			goto out;
+		}
+
 		slave_no = bond->arr.queue[bond->rr_tx_counter++ % bond->arr.queue_length];
 
 		read_unlock_bh(&bond->lock);
