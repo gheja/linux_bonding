@@ -1553,7 +1553,7 @@ static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsi
 	struct slave *slave;
 	int i, sum, max, slave_no;
 
-	pr_info("arr_update(..., %d, %d)\n", avg_speed, current_speed);
+	pr_debug("arr_update(..., %d, %d)\n", avg_speed, current_speed);
 
 	if (avg_speed == 0 || current_speed == 0)
 	{
@@ -1592,7 +1592,7 @@ static void arr_update(struct net_device *bond_dev, unsigned int avg_speed, unsi
 	bond_for_each_slave(bond, slave, i) {
 		sum += slave->arr_weight;
 		max = slave->arr_weight > max ? slave->arr_weight : max;
-		pr_info("  %d arr weight: %d\n", i, slave->arr_weight);
+		pr_debug("  arr weight for slave #%d: %d\n", i, slave->arr_weight);
 	}
 
 	if (unlikely(max > 200))
@@ -2474,7 +2474,7 @@ void bond_arr_monitor(struct work_struct *work)
 
 	count = bond->rr_tx_counter - bond->arr.last_tx_counter;
 
-	pr_info("Packets transmitted: %d\n", count);
+	pr_debug("bond_arr_monitor(): packets transmitted: %d\n", count);
 
 	if (count > 5)
 	{
